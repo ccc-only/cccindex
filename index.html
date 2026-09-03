@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reserve Camera Gear</title>
+  <style>
+    :root { --primary: #10b981; --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --danger: #ef4444; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 20px; margin: 0; }
+    .container { max-width: 600px; margin: 0 auto; background: var(--card); padding: 25px; border-radius: 12px; }
+    label { display: block; margin: 12px 0 4px; font-size: 0.9em; opacity: 0.8; }
+    input, select, button { width: 100%; padding: 12px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: white; box-sizing: border-box; }
+    button { background: var(--primary); color: #000; font-weight: bold; border: none; cursor: pointer; margin-top: 15px; }
+    .cancel-btn { background: var(--danger); color: white; }
+    .qr-box { text-align: center; margin-top: 20px; padding: 15px; background: #fff; color: #000; border-radius: 8px; display: none; }
+    .qr-box img { max-width: 180px; }
+    .status-badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.85em; font-weight: bold; margin-top: 10px; }
+    .pending { background: #f59e0b; color: #000; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h2>Camera Gear Reservation</h2>
+    
+    <form id="publicBookingForm">
+      <label>Select Camera Unit</label>
+      <select id="cameraSelect" required></select>
+
+      <label>Start Date & Time</label>
+      <input type="datetime-local" id="startTime" required>
+
+      <label>End Date & Time</label>
+      <input type="datetime-local" id="endTime" required>
+
+      <label>Your Full Name</label>
+      <input type="text" id="custName" placeholder="e.g. Juan Cruz" required>
+
+      <button type="button" onclick="submitBooking()">Request Reservation</button>
+    </form>
+
+    <div id="bookingSummary" class="qr-box">
+      <div class="status-badge pending">Status: Awaiting Payment Verification</div>
+      <h3>Total Amount Due: ₱<span id="totalDue">0</span></h3>
+      <p style="font-size:0.85em; margin: 5px 0;">(Rental: ₱<span id="rentalFee">0</span> + Deposit: ₱<span id="secDeposit">0</span>)</p>
+
+      <p><strong>Scan & Pay via GCash / Maya / Bank</strong></p>
+      <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=YOUR_PAYMENT_LINK_HERE" alt="Payment QR">
+      <p style="font-size: 0.8em; color: #475569;">Please retain your Ref No. We will verify your payment shortly.</p>
+
+      <button type="button" class="cancel-btn" onclick="customerCancelBooking()">Cancel My Booking (Unpaid)</button>
+    </div>
+  </div>
+
+  <script>
+    let inventory = JSON.parse(localStorage.getItem('gear_inv')) || [];
+    let bookings = JSON.parse(localStorage.getItem('gear_bookings')) || [];
+    let currentBookingId = null;
+
+    function renderSelect() {
+      const select = document.getElementById('cameraSelect');
+      select.innerHTML = inventory.map(i => `<option value="${i.id}">${i.name} (₱${i.daily}/day)</option>`).join('');
+    }
+
+    function submitBooking() {
+      const camId = document.getElementById('cameraSelect').value;
+      const start = new Date(document.getElementById('startTime').value);
+      const end = new Date(document.getElementById('endTime').value);
+      const name = document.getElementById('custName').value;
+
+      if(!camId || isNaN(start) || isNaN(end) || start >= end || !name) {
+        return alert('Please fill out all fields correctly.');
+      }
+
+      const gear = inventory.find(i => i.id == camId);
+
+      // Check conflicts against existing active/verified bookings
+      const hasConflict = bookings.some(b => {
+        if (b.camId != camId || b.status === 'Cancelled') return false;
+        const bStart = new Date(new Date(b.start).getTime() - (gear.buffer * 60000));
+        const bEnd = new Date(new Date(b.end).getTime() + (gear.buffer * 60000));
+        return (start < bEnd && end > bStart);
+      });
+
+      if(hasConflict) {
+        return alert('This unit is unavailable or undergoing buffer maintenance during the selected times.');
+      }
+
+      // Calculate Duration and Price
+      const durationHours = Math.abs(end - start) / 36e5;
+      const rentalPrice = durationHours >= 24 
+        ? Math.ceil(durationHours / 24) * gear.daily 
+        : Math.ceil(durationHours) * gear.hourly;
+
+      currentBookingId = Date.now();
+
+      const newBooking = {
+        id: currentBookingId,
+        camId: gear.id,
+        camName: gear.name,
+        customer: name,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        price: rentalPrice,
+        deposit: gear.deposit,
+        paymentVerified: false, // Default: Unverified
+        depositReturned: false,
+        status: 'Pending Payment'
+      };
+
+      bookings.push(newBooking);
+      localStorage.setItem('gear_bookings', JSON.stringify(bookings));
+
+      // Display summary UI
+      document.getElementById('rentalFee').innerText = rentalPrice;
+      document.getElementById('secDeposit').innerText = gear.deposit;
+      document.getElementById('totalDue').innerText = rentalPrice + gear.deposit;
+      document.getElementById('bookingSummary').style.display = 'block';
+      alert('Booking submitted! Please submit your payment using the QR code below.');
+    }
+
+    function customerCancelBooking() {
+      if(!currentBookingId) return;
+
+      const bookingIndex = bookings.findIndex(b => b.id === currentBookingId);
+      if(bookingIndex > -1) {
+        const b = bookings[bookingIndex];
+        if(b.paymentVerified) {
+          return alert('Your payment has already been verified! Please contact the admin directly to discuss cancellation and refunds.');
+        }
+
+        bookings.splice(bookingIndex, 1); // Remove unpaid booking
+        localStorage.setItem('gear_bookings', JSON.stringify(bookings));
+        document.getElementById('bookingSummary').style.display = 'none';
+        document.getElementById('publicBookingForm').reset();
+        alert('Your reservation request has been cancelled.');
+      }
+    }
+
+    renderSelect();
+  </script>
+</body>
+</html>
